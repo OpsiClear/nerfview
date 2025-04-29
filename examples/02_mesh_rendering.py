@@ -172,13 +172,21 @@ def main(port: int = 8080):
     )
 
     def render_fn(
-        camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        camera_state: nerfview.CameraState, render_tab_state: nerfview.RenderTabState
     ) -> UInt8[np.ndarray, "H W 3"]:
-        # nvdiffrast requires the image size to be multiples of 8.
-        img_wh = (img_wh[0] // 8 * 8, img_wh[1] // 8 * 8)
-
         # Get camera parameters.
+        if render_tab_state.preview_render:
+            width = render_tab_state.render_width
+            height = render_tab_state.render_height
+        else:
+            width = render_tab_state.viewer_width
+            height = render_tab_state.viewer_height
+
+        # nvdiffrast requires the image size to be multiples of 8.
+        width = width // 8 * 8
+        height = height // 8 * 8
         c2w = camera_state.c2w
+        img_wh = [width, height]
         K = camera_state.get_K(img_wh)
 
         # Compute the normal map.

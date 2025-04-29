@@ -24,19 +24,26 @@ def main(port: int = 8080, rendering_latency: float = 0.0):
     """
 
     def render_fn(
-        camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        camera_state: nerfview.CameraState, render_tab_state: nerfview.RenderTabState
     ) -> UInt8[np.ndarray, "H W 3"]:
         # Get camera parameters.
-        W, H = img_wh
+        if render_tab_state.preview_render:
+            width = render_tab_state.render_width
+            height = render_tab_state.render_height
+        else:
+            width = render_tab_state.viewer_width
+            height = render_tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K([width, height])
 
         # Render a dummy image as a function of camera direction.
         camera_dirs = np.einsum(
             "ij,hwj->hwi",
             np.linalg.inv(K),
             np.pad(
-                np.stack(np.meshgrid(np.arange(W), np.arange(H), indexing="xy"), -1)
+                np.stack(
+                    np.meshgrid(np.arange(width), np.arange(height), indexing="xy"), -1
+                )
                 + 0.5,
                 ((0, 0), (0, 0), (0, 1)),
                 constant_values=1.0,

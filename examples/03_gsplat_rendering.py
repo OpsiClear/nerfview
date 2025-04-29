@@ -135,10 +135,17 @@ else:
 
 # register and open viewer
 @torch.no_grad()
-def viewer_render_fn(camera_state: nerfview.CameraState, img_wh: Tuple[int, int]):
-    width, height = img_wh
+def viewer_render_fn(
+    camera_state: nerfview.CameraState, render_tab_state: nerfview.RenderTabState
+):
+    if render_tab_state.preview_render:
+        width = render_tab_state.render_width
+        height = render_tab_state.render_height
+    else:
+        width = render_tab_state.viewer_width
+        height = render_tab_state.viewer_height
     c2w = camera_state.c2w
-    K = camera_state.get_K(img_wh)
+    K = camera_state.get_K([width, height])
     c2w = torch.from_numpy(c2w).float().to(device)
     K = torch.from_numpy(K).float().to(device)
     viewmat = c2w.inverse()

@@ -916,20 +916,31 @@ class Runner:
 
     @torch.no_grad()
     def _viewer_render_fn(
-        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        self,
+        camera_state: nerfview.CameraState,
+        render_tab_state: nerfview.RenderTabState,
     ):
         """Callable function for the viewer."""
-        W, H = img_wh
+        if render_tab_state.preview_render:
+            width, height = (
+                render_tab_state.render_width,
+                render_tab_state.render_height,
+            )
+        else:
+            width, height = (
+                render_tab_state.viewer_width,
+                render_tab_state.viewer_height,
+            )
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K([width, height])
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
 
         render_colors, _, _ = self.rasterize_splats(
             camtoworlds=c2w[None],
             Ks=K[None],
-            width=W,
-            height=H,
+            width=width,
+            height=height,
             sh_degree=self.cfg.sh_degree,  # active all SH degrees
             radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
             backgrounds=torch.ones(1, 3, device=self.device),
