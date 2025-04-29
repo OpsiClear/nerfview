@@ -14,26 +14,27 @@
 
 from __future__ import annotations
 
-import os
 import colorsys
 import dataclasses
-import imageio
 import json
+import os
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Literal
-from jaxtyping import Float
-import torch
-from torch import Tensor
-from rich.console import Console
+from typing import Dict, List, Literal, Optional, Tuple, Union
+
+import imageio
+import matplotlib
 import numpy as np
 import splines
 import splines.quaternion
+import torch
 import viser
 import viser.transforms as tf
+from jaxtyping import Float
+from rich.console import Console
 from scipy import interpolate
-import matplotlib
+from torch import Tensor
 
 
 @dataclasses.dataclass

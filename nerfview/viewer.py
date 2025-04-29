@@ -1,7 +1,8 @@
 import dataclasses
 import time
+from pathlib import Path
 from threading import Lock
-from typing import Callable, Literal, Tuple, Optional
+from typing import Callable, Literal, Optional, Tuple
 
 import numpy as np
 import viser
@@ -9,8 +10,7 @@ import viser.transforms as vt
 from jaxtyping import Float32
 
 from ._renderer import Renderer, RenderTask
-from .render_panel import populate_general_render_tab, RenderTabState
-from pathlib import Path
+from .render_panel import RenderTabState, populate_general_render_tab
 
 
 @dataclasses.dataclass
