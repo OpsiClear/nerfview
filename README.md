@@ -54,12 +54,19 @@ import nerfview
 
 
 def render_fn(
-    camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+    camera_state: nerfview.CameraState, render_tab_state: nerfview.RenderTabState
 ) -> np.ndarray:
     # Parse camera state for camera-to-world matrix (c2w) and intrinsic (K) as
     # float64 numpy arrays.
+    if render_tab_state.preview_render:
+        width = render_tab_state.render_width
+        height = render_tab_state.render_height
+    else:
+        width = render_tab_state.viewer_width
+        height = render_tab_state.viewer_height
+
     c2w = camera_state.c2w
-    K = camera_state.get_K(img_wh)
+    K = camera_state.get_K([width, height])
     # Do your things and get an image as a uint8 numpy array.
     img = your_rendering_logic(...)
     return img
@@ -139,7 +146,7 @@ which we include here to be self-contained.
 # Only need to run once the first time.
 bash examples/assets/download_gsplat_ckpt.sh
 CUDA_VISIBLE_DEVICES=0 python examples/03_gsplat_rendering.py \
-    --ckpt results/garden/ckpts/ckpt_6999_crop.pt
+    --ckpt examples/assets/ckpt_6999_crop.pt
 ```
 
 </details>

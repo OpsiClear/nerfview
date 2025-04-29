@@ -29,19 +29,26 @@ def main(port: int = 8080, max_steps: int = 50, rendering_latency: float = 0.0):
     step: int = 0
 
     def render_fn(
-        camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        camera_state: nerfview.CameraState, render_tab_state: nerfview.RenderTabState
     ) -> UInt8[np.ndarray, "H W 3"]:
         # Get camera parameters.
-        W, H = img_wh
+        if render_tab_state.preview_render:
+            width = render_tab_state.render_width
+            height = render_tab_state.render_height
+        else:
+            width = render_tab_state.viewer_width
+            height = render_tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K([width, height])
 
         # Render a dummy image as a function of camera direction.
         camera_dirs = np.einsum(
             "ij,hwj->hwi",
             np.linalg.inv(K),
             np.pad(
-                np.stack(np.meshgrid(np.arange(W), np.arange(H), indexing="xy"), -1)
+                np.stack(
+                    np.meshgrid(np.arange(width), np.arange(height), indexing="xy"), -1
+                )
                 + 0.5,
                 ((0, 0), (0, 0), (0, 1)),
                 constant_values=1.0,
@@ -83,11 +90,11 @@ def main(port: int = 8080, max_steps: int = 50, rendering_latency: float = 0.0):
     # Optionally make the training utility lower such that we update the scene
     # more frequently in this example. You dont need to do this in your own
     # code.
-    viewer._train_util_slider.value = 0.5
+    viewer._training_tab_handles["train_util_slider"].value = 0.5
 
     for step in tqdm(range(max_steps)):
         # Allow user to pause the training process.
-        while viewer.state.status == "paused":
+        while viewer.state == "paused":
             time.sleep(0.01)
         # Do the training step and compute the number of training rays per second.
         tic = time.time()
@@ -96,7 +103,7 @@ def main(port: int = 8080, max_steps: int = 50, rendering_latency: float = 0.0):
         num_train_steps_per_sec = 1.0 / (time.time() - tic)
         num_train_rays_per_sec = num_train_rays_per_step * num_train_steps_per_sec
         # Update the viewer state.
-        viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+        viewer.render_tab_state.num_train_rays_per_sec = num_train_rays_per_sec
         # Update the scene.
         viewer.update(step, num_train_rays_per_step)
     viewer.complete()
