@@ -171,7 +171,7 @@ class Renderer(threading.Thread):
                     else:
                         img, depth = rendered, None
                     self.viewer.render_tab_state.num_view_rays_per_sec = (W * H) / (
-                        time.time() - tic
+                        max(time.time() - tic, 1e-10)
                     )
             except InterruptRenderException:
                 continue
