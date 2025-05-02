@@ -30,7 +30,7 @@ pip install nerfview
 To run our examples, you can clone this repository and then install it locally:
 
 ```bash
-git clone https://github.com/hangg7/nerfview
+git clone https://github.com/nerfstudio-project/nerfview
 # Install torch first.
 pip install torch
 # Then this repo and dependencies for running examples. Note that `gsplat`
