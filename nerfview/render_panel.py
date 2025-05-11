@@ -988,11 +988,12 @@ def populate_general_render_tab(
                 color=(10, 200, 30),
             )
             if render_tab_state.preview_render:
-                for client in server.get_clients().values():
-                    # aspect ratio is not assignable, pass args in get_render instead
-                    client.camera.wxyz = pose.rotation().wxyz
-                    client.camera.position = pose.translation()
-                    client.camera.fov = fov_rad
+                with server.atomic():
+                    for client in server.get_clients().values():
+                        # aspect ratio is not assignable, pass args in get_render instead
+                        client.camera.wxyz = pose.rotation().wxyz
+                        client.camera.position = pose.translation()
+                        client.camera.fov = fov_rad
 
         return preview_frame_slider
 
@@ -1020,14 +1021,15 @@ def populate_general_render_tab(
         server.scene.set_global_visibility(False)
 
         # Back up and then set camera poses.
-        for client in server.get_clients().values():
-            camera_pose_backup_from_id[client.client_id] = (
-                client.camera.position,
-                client.camera.look_at,
-                client.camera.up_direction,
-            )
-            client.camera.wxyz = pose.rotation().wxyz
-            client.camera.position = pose.translation()
+        with server.atomic():
+            for client in server.get_clients().values():
+                camera_pose_backup_from_id[client.client_id] = (
+                    client.camera.position,
+                    client.camera.look_at,
+                    client.camera.up_direction,
+                )
+                client.camera.wxyz = pose.rotation().wxyz
+                client.camera.position = pose.translation()
 
     @preview_render_stop_button.on_click
     def _(_) -> None:
@@ -1037,16 +1039,17 @@ def populate_general_render_tab(
         dump_video_button.disabled = False
 
         # Revert camera poses.
-        for client in server.get_clients().values():
-            if client.client_id not in camera_pose_backup_from_id:
-                continue
-            cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
-                client.client_id
-            )
-            client.camera.position = cam_position
-            client.camera.look_at = cam_look_at
-            client.camera.up_direction = cam_up
-            client.flush()
+        with server.atomic():
+            for client in server.get_clients().values():
+                if client.client_id not in camera_pose_backup_from_id:
+                    continue
+                cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
+                    client.client_id
+                )
+                client.camera.position = cam_position
+                client.camera.look_at = cam_look_at
+                client.camera.up_direction = cam_up
+                client.flush()
 
         # Un-hide scene nodes.
         server.scene.set_global_visibility(True)
@@ -1337,14 +1340,15 @@ def populate_general_render_tab(
         server.scene.set_global_visibility(False)
 
         # Back up and then set camera poses.
-        for client in server.get_clients().values():
-            camera_pose_backup_from_id[client.client_id] = (
-                client.camera.position,
-                client.camera.look_at,
-                client.camera.up_direction,
-            )
-            client.camera.wxyz = pose.rotation().wxyz
-            client.camera.position = pose.translation()
+        with server.atomic():
+            for client in server.get_clients().values():
+                camera_pose_backup_from_id[client.client_id] = (
+                    client.camera.position,
+                    client.camera.look_at,
+                    client.camera.up_direction,
+                )
+                client.camera.wxyz = pose.rotation().wxyz
+                client.camera.position = pose.translation()
 
         # disable all the trajectory control widgets
         handles_to_disable = list(handles.values()) + list(extra_handles.values())
@@ -1386,16 +1390,17 @@ def populate_general_render_tab(
         render_tab_state.preview_render = False
 
         # Revert camera poses.
-        for client in server.get_clients().values():
-            if client.client_id not in camera_pose_backup_from_id:
-                continue
-            cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
-                client.client_id
-            )
-            client.camera.position = cam_position
-            client.camera.look_at = cam_look_at
-            client.camera.up_direction = cam_up
-            client.flush()
+        with server.atomic():
+            for client in server.get_clients().values():
+                if client.client_id not in camera_pose_backup_from_id:
+                    continue
+                cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
+                    client.client_id
+                )
+                client.camera.position = cam_position
+                client.camera.look_at = cam_look_at
+                client.camera.up_direction = cam_up
+                client.flush()
 
         # Un-hide scene nodes.
         server.scene.set_global_visibility(True)
