@@ -1206,7 +1206,7 @@ def populate_general_render_tab(
                     # visualize the camera path
                     server.scene.set_global_visibility(True)
 
-            cancel_button = event.client.gui.add_button("Cancel")
+            cancel_button = event.client.gui.add_button("Cancel", color="gray")
 
             @cancel_button.on_click
             def _(_) -> None:
@@ -1306,7 +1306,7 @@ def populate_general_render_tab(
                     "Path already exists. Do you want to overwrite?"
                 )
                 overwrite_button = event.client.gui.add_button("Overwrite")
-                cancel_button = event.client.gui.add_button("Cancel")
+                cancel_button = event.client.gui.add_button("Cancel", color="gray")
 
                 @overwrite_button.on_click
                 def _(_) -> None:
@@ -1412,7 +1412,7 @@ def populate_general_render_tab(
                     "Video already exists. Do you want to overwrite?"
                 )
                 overwrite_button = event.client.gui.add_button("Overwrite")
-                cancel_button = event.client.gui.add_button("Cancel")
+                cancel_button = event.client.gui.add_button("Cancel", color="gray")
 
                 @overwrite_button.on_click
                 def _(_) -> None:
