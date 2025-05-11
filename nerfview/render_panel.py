@@ -1104,6 +1104,7 @@ def populate_general_render_tab(
     def _(_) -> None:
         play_button.visible = False
         pause_button.visible = True
+        prev_dump_video_disabled = dump_video_button.disabled
         dump_video_button.disabled = True
 
         def play() -> None:
@@ -1119,7 +1120,7 @@ def populate_general_render_tab(
         play_thread = threading.Thread(target=play)
         play_thread.start()
         play_thread.join()
-        dump_video_button.disabled = False
+        dump_video_button.disabled = prev_dump_video_disabled
 
     # Play the camera trajectory when the play button is pressed.
     @pause_button.on_click
