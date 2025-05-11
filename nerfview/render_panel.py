@@ -935,17 +935,17 @@ def populate_general_render_tab(
             return
         time = None
         if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
-            pose, fov_rad, time = maybe_pose_and_fov_rad
+            pose, fov, time = maybe_pose_and_fov_rad
             render_tab_state.preview_time = time
         else:
-            pose, fov_rad = maybe_pose_and_fov_rad
-        render_tab_state.preview_fov = fov_rad
+            pose, fov = maybe_pose_and_fov_rad
+        render_tab_state.preview_fov = fov
         render_tab_state.preview_aspect = camera_path.get_aspect()
 
         if time is not None:
-            return pose, fov_rad, time
+            return pose, fov, time
         else:
-            return pose, fov_rad
+            return pose, fov
 
     def add_preview_frame_slider() -> Optional[viser.GuiInputHandle[int]]:
         """Helper for creating the current frame # slider. This is removed and
@@ -974,13 +974,13 @@ def populate_general_render_tab(
             if maybe_pose_and_fov_rad is None:
                 return
             if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
-                pose, fov_rad, time = maybe_pose_and_fov_rad
+                pose, fov, time = maybe_pose_and_fov_rad
             else:
-                pose, fov_rad = maybe_pose_and_fov_rad
+                pose, fov = maybe_pose_and_fov_rad
 
             preview_camera_handle = server.scene.add_camera_frustum(
                 "/preview_camera",
-                fov=fov_rad,
+                fov=fov,
                 aspect=render_res_vec2.value[0] / render_res_vec2.value[1],
                 scale=0.35,
                 wxyz=pose.rotation().wxyz,
@@ -993,7 +993,7 @@ def populate_general_render_tab(
                         # aspect ratio is not assignable, pass args in get_render instead
                         client.camera.wxyz = pose.rotation().wxyz
                         client.camera.position = pose.translation()
-                        client.camera.fov = fov_rad
+                        client.camera.fov = fov
 
         return preview_frame_slider
 
@@ -1216,108 +1216,110 @@ def populate_general_render_tab(
     @save_camera_path_button.on_click
     def _(event: viser.GuiEvent) -> None:
         assert event.client is not None
-        num_frames = int(framerate_number.value * duration_number.value)
-        json_data = {}
-        # json data has the properties:
-        # keyframes: list of keyframes with
-        #     matrix : flattened 4x4 matrix
-        #     fov: float in degrees
-        #     aspect: float
-        # render_height: int
-        # render_width: int
-        # fps: int
-        # seconds: float
-        # is_cycle: bool
-        # smoothness_value: float
-        # camera_path: list of frames with properties
-        # camera_to_world: flattened 4x4 matrix
-        # fov: float in degrees
-        # aspect: float
-        # first populate the keyframes:
-        keyframes = []
-        for keyframe, dummy in camera_path._keyframes.values():
-            pose = tf.SE3.from_rotation_and_translation(
-                tf.SO3(keyframe.wxyz) @ tf.SO3.from_x_radians(np.pi),
-                keyframe.position / scale_ratio,
-            )
-            keyframe_dict = {
-                "matrix": pose.as_matrix().flatten().tolist(),
-                "fov": (
-                    np.rad2deg(keyframe.override_fov_rad)
-                    if keyframe.override_fov_enabled
-                    else fov_degrees_slider.value
-                ),
-                "aspect": keyframe.aspect,
-                "override_transition_enabled": keyframe.override_transition_enabled,
-                "override_transition_sec": keyframe.override_transition_sec,
-            }
-            keyframes.append(keyframe_dict)
-        json_data["default_fov"] = fov_degrees_slider.value
-        json_data["default_transition_sec"] = transition_sec_number.value
-        json_data["keyframes"] = keyframes
-        json_data["render_height"] = render_res_vec2.value[1]
-        json_data["render_width"] = render_res_vec2.value[0]
-        json_data["fps"] = framerate_number.value
-        json_data["seconds"] = duration_number.value
-        json_data["is_cycle"] = loop_checkbox.value
-        json_data["smoothness_value"] = tension_slider.value
-        # now populate the camera path:
-        camera_path_list = []
-        for i in range(num_frames):
-            maybe_pose_and_fov = camera_path.interpolate_pose_and_fov_rad(
-                i / num_frames
-            )
-            if maybe_pose_and_fov is None:
-                return
-            time = None
-            if len(maybe_pose_and_fov) == 3:  # Time is enabled.
-                pose, fov, time = maybe_pose_and_fov
-            else:
-                pose, fov = maybe_pose_and_fov
-            # rotate the axis of the camera 180 about x axis
-            pose = tf.SE3.from_rotation_and_translation(
-                pose.rotation() @ tf.SO3.from_x_radians(np.pi),
-                pose.translation() / scale_ratio,
-            )
-            camera_path_list_dict = {
-                "camera_to_world": pose.as_matrix().flatten().tolist(),
-                "fov": np.rad2deg(fov),
-                "aspect": render_res_vec2.value[0] / render_res_vec2.value[1],
-            }
-            if time is not None:
-                camera_path_list_dict["render_time"] = time
-            camera_path_list.append(camera_path_list_dict)
-        json_data["camera_path"] = camera_path_list
-        # finally add crop data if crop is enabled
-        # if control_panel is not None:
-        #     if control_panel.crop_viewport:
-        #         obb = control_panel.crop_obb
-        #         rpy = tf.SO3.from_matrix(obb.R.numpy()).as_rpy_radians()
-        #         color = control_panel.background_color
-        #         json_data["crop"] = {
-        #             "crop_center": obb.T.tolist(),
-        #             "crop_scale": obb.S.tolist(),
-        #             "crop_rot": [rpy.roll, rpy.pitch, rpy.yaw],
-        #             "crop_bg_color": {"r": color[0], "g": color[1], "b": color[2]},
-        #         }
 
-        # now write the json file
-        try:
-            json_outfile = (
-                output_dir / "camera_paths" / f"{trajectory_name_text.value}.json"
-            )
+        json_outfile = (
+            output_dir / "camera_paths" / f"{trajectory_name_text.value}.json"
+        )
+
+        def save_camera_path() -> None:
             json_outfile.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            Console(width=120).print(
-                "[bold yellow]Warning: Failed to write the camera path to the data directory. Saving to the output directory instead."
-            )
-            json_outfile = (
-                output_dir / "camera_paths" / f"{trajectory_name_text.value}.json"
-            )
-            json_outfile.parent.mkdir(parents=True, exist_ok=True)
-        with open(json_outfile.absolute(), "w") as outfile:
-            json.dump(json_data, outfile)
-            print(f"Camera path saved to {json_outfile.absolute()}")
+
+            num_frames = int(framerate_number.value * duration_number.value)
+            json_data = {}
+            # json data has the properties:
+            # keyframes: list of keyframes with
+            #     matrix : flattened 4x4 matrix
+            #     fov: float in degrees
+            #     aspect: float
+            # render_height: int
+            # render_width: int
+            # fps: int
+            # seconds: float
+            # is_cycle: bool
+            # smoothness_value: float
+            # camera_path: list of frames with properties
+            # camera_to_world: flattened 4x4 matrix
+            # fov: float in degrees
+            # aspect: float
+            # first populate the keyframes:
+            keyframes = []
+            for keyframe, dummy in camera_path._keyframes.values():
+                pose = tf.SE3.from_rotation_and_translation(
+                    tf.SO3(keyframe.wxyz) @ tf.SO3.from_x_radians(np.pi),
+                    keyframe.position / scale_ratio,
+                )
+                keyframe_dict = {
+                    "matrix": pose.as_matrix().flatten().tolist(),
+                    "fov": (
+                        np.rad2deg(keyframe.override_fov_rad)
+                        if keyframe.override_fov_enabled
+                        else fov_degrees_slider.value
+                    ),
+                    "aspect": keyframe.aspect,
+                    "override_transition_enabled": keyframe.override_transition_enabled,
+                    "override_transition_sec": keyframe.override_transition_sec,
+                }
+                keyframes.append(keyframe_dict)
+            json_data["default_fov"] = fov_degrees_slider.value
+            json_data["default_transition_sec"] = transition_sec_number.value
+            json_data["keyframes"] = keyframes
+            json_data["render_height"] = render_res_vec2.value[1]
+            json_data["render_width"] = render_res_vec2.value[0]
+            json_data["fps"] = framerate_number.value
+            json_data["seconds"] = duration_number.value
+            json_data["is_cycle"] = loop_checkbox.value
+            json_data["smoothness_value"] = tension_slider.value
+            # now populate the camera path:
+            camera_path_list = []
+            for i in range(num_frames):
+                maybe_pose_and_fov = camera_path.interpolate_pose_and_fov_rad(
+                    i / num_frames
+                )
+                if maybe_pose_and_fov is None:
+                    return
+                time = None
+                if len(maybe_pose_and_fov) == 3:  # Time is enabled.
+                    pose, fov, time = maybe_pose_and_fov
+                else:
+                    pose, fov = maybe_pose_and_fov
+                # rotate the axis of the camera 180 about x axis
+                pose = tf.SE3.from_rotation_and_translation(
+                    pose.rotation() @ tf.SO3.from_x_radians(np.pi),
+                    pose.translation() / scale_ratio,
+                )
+                camera_path_list_dict = {
+                    "camera_to_world": pose.as_matrix().flatten().tolist(),
+                    "fov": np.rad2deg(fov),
+                    "aspect": render_res_vec2.value[0] / render_res_vec2.value[1],
+                }
+                if time is not None:
+                    camera_path_list_dict["render_time"] = time
+                camera_path_list.append(camera_path_list_dict)
+            json_data["camera_path"] = camera_path_list
+
+            with open(json_outfile.absolute(), "w") as outfile:
+                json.dump(json_data, outfile)
+                print(f"Camera path saved to {json_outfile.absolute()}")
+
+        if json_outfile.exists():
+            with event.client.gui.add_modal("Save Path") as modal:
+                event.client.gui.add_markdown(
+                    "Path already exists. Do you want to overwrite?"
+                )
+                overwrite_button = event.client.gui.add_button("Overwrite")
+                cancel_button = event.client.gui.add_button("Cancel")
+
+                @overwrite_button.on_click
+                def _(_) -> None:
+                    modal.close()
+                    save_camera_path()
+
+                @cancel_button.on_click
+                def _(_) -> None:
+                    modal.close()
+
+        else:
+            save_camera_path()
 
     @dump_video_button.on_click
     def _(event: viser.GuiEvent) -> None:
