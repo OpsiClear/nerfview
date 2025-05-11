@@ -1326,86 +1326,106 @@ def populate_general_render_tab(
         client = event.client
         assert client is not None
 
-        # enter into preview render mode
-        render_tab_state.preview_render = True
-        maybe_pose_and_fov_rad = compute_and_update_preview_camera_state()
-        if maybe_pose_and_fov_rad is None:
-            remove_preview_camera()
-            return
-        if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
-            pose, fov, time = maybe_pose_and_fov_rad
+        video_outfile = output_dir / "videos" / f"traj_{trajectory_name_text.value}.mp4"
+
+        def dump_video() -> None:
+            # enter into preview render mode
+            render_tab_state.preview_render = True
+            maybe_pose_and_fov_rad = compute_and_update_preview_camera_state()
+            if maybe_pose_and_fov_rad is None:
+                remove_preview_camera()
+                return
+            if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
+                pose, fov, time = maybe_pose_and_fov_rad
+            else:
+                pose, fov = maybe_pose_and_fov_rad
+            del fov
+
+            # Hide all scene nodes when we're previewing the render.
+            server.scene.set_global_visibility(False)
+
+            # Back up and then set camera poses.
+            with server.atomic():
+                for client in server.get_clients().values():
+                    camera_pose_backup_from_id[client.client_id] = (
+                        client.camera.position,
+                        client.camera.look_at,
+                        client.camera.up_direction,
+                    )
+                    client.camera.wxyz = pose.rotation().wxyz
+                    client.camera.position = pose.translation()
+
+            # disable all the trajectory control widgets
+            handles_to_disable = list(handles.values()) + list(extra_handles.values())
+            original_disabled = [handle.disabled for handle in handles_to_disable]
+            for handle in handles_to_disable:
+                handle.disabled = True
+
+            def dump() -> None:
+                os.makedirs(output_dir / "videos", exist_ok=True)
+                writer = imageio.get_writer(video_outfile, fps=framerate_number.value)
+                max_frame = int(framerate_number.value * duration_number.value)
+                assert max_frame > 0 and preview_frame_slider is not None
+                preview_frame_slider.value = 0
+                for _ in range(max_frame):
+                    preview_frame_slider.value = (
+                        preview_frame_slider.value + 1
+                    ) % max_frame
+                    # should we use get_render here?
+                    image = client.camera.get_render(
+                        height=render_res_vec2.value[1],
+                        width=render_res_vec2.value[0],
+                    )
+                    writer.append_data(image)
+                writer.close()
+                print(f"Video saved to {video_outfile}")
+
+            dump_thread = threading.Thread(target=dump)
+            dump_thread.start()
+            dump_thread.join()
+
+            # restore the original disabled state
+            for handle, original_disabled in zip(handles_to_disable, original_disabled):
+                handle.disabled = original_disabled
+
+            # exit preview render mode
+            render_tab_state.preview_render = False
+
+            # Revert camera poses.
+            with server.atomic():
+                for client in server.get_clients().values():
+                    if client.client_id not in camera_pose_backup_from_id:
+                        continue
+                    cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
+                        client.client_id
+                    )
+                    client.camera.position = cam_position
+                    client.camera.look_at = cam_look_at
+                    client.camera.up_direction = cam_up
+                    client.flush()
+
+            # Un-hide scene nodes.
+            server.scene.set_global_visibility(True)
+
+        if video_outfile.exists():
+            with event.client.gui.add_modal("Dump Video") as modal:
+                event.client.gui.add_markdown(
+                    "Video already exists. Do you want to overwrite?"
+                )
+                overwrite_button = event.client.gui.add_button("Overwrite")
+                cancel_button = event.client.gui.add_button("Cancel")
+
+                @overwrite_button.on_click
+                def _(_) -> None:
+                    modal.close()
+                    dump_video()
+
+                @cancel_button.on_click
+                def _(_) -> None:
+                    modal.close()
+
         else:
-            pose, fov = maybe_pose_and_fov_rad
-        del fov
-
-        # Hide all scene nodes when we're previewing the render.
-        server.scene.set_global_visibility(False)
-
-        # Back up and then set camera poses.
-        with server.atomic():
-            for client in server.get_clients().values():
-                camera_pose_backup_from_id[client.client_id] = (
-                    client.camera.position,
-                    client.camera.look_at,
-                    client.camera.up_direction,
-                )
-                client.camera.wxyz = pose.rotation().wxyz
-                client.camera.position = pose.translation()
-
-        # disable all the trajectory control widgets
-        handles_to_disable = list(handles.values()) + list(extra_handles.values())
-        original_disabled = [handle.disabled for handle in handles_to_disable]
-        for handle in handles_to_disable:
-            handle.disabled = True
-
-        def dump() -> None:
-            os.makedirs(output_dir / "videos", exist_ok=True)
-            writer = imageio.get_writer(
-                f"{output_dir}/videos/traj_{trajectory_name_text.value}.mp4",
-                fps=framerate_number.value,
-            )
-            max_frame = int(framerate_number.value * duration_number.value)
-            assert max_frame > 0 and preview_frame_slider is not None
-            preview_frame_slider.value = 0
-            for _ in range(max_frame):
-                preview_frame_slider.value = (
-                    preview_frame_slider.value + 1
-                ) % max_frame
-                # should we use get_render here?
-                image = client.camera.get_render(
-                    height=render_res_vec2.value[1],
-                    width=render_res_vec2.value[0],
-                )
-                writer.append_data(image)
-            writer.close()
-            print(f"Video saved to videos/traj_{trajectory_name_text.value}.mp4")
-
-        dump_thread = threading.Thread(target=dump)
-        dump_thread.start()
-        dump_thread.join()
-
-        # restore the original disabled state
-        for handle, original_disabled in zip(handles_to_disable, original_disabled):
-            handle.disabled = original_disabled
-
-        # exit preview render mode
-        render_tab_state.preview_render = False
-
-        # Revert camera poses.
-        with server.atomic():
-            for client in server.get_clients().values():
-                if client.client_id not in camera_pose_backup_from_id:
-                    continue
-                cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
-                    client.client_id
-                )
-                client.camera.position = cam_position
-                client.camera.look_at = cam_look_at
-                client.camera.up_direction = cam_up
-                client.flush()
-
-        # Un-hide scene nodes.
-        server.scene.set_global_visibility(True)
+            dump_video()
 
     camera_path = CameraPath(server, duration_number)
     camera_path.tension = tension_slider.value
