@@ -1124,7 +1124,7 @@ def populate_general_render_tab(
         play_thread.join()
         dump_video_button.disabled = not preview_save_camera_path_button.visible
 
-    # Play the camera trajectory when the play button is pressed.
+    # Pause the camera trajectory when the pause button is pressed.
     @pause_button.on_click
     def _(_) -> None:
         play_button.visible = True
