@@ -977,18 +977,17 @@ def populate_general_render_tab(
                 pose, fov, time = maybe_pose_and_fov_rad
             else:
                 pose, fov = maybe_pose_and_fov_rad
-
-            preview_camera_handle = server.scene.add_camera_frustum(
-                "/preview_camera",
-                fov=fov,
-                aspect=render_res_vec2.value[0] / render_res_vec2.value[1],
-                scale=0.35,
-                wxyz=pose.rotation().wxyz,
-                position=pose.translation(),
-                color=(10, 200, 30),
-            )
-            if render_tab_state.preview_render:
-                with server.atomic():
+            with server.atomic():
+                preview_camera_handle = server.scene.add_camera_frustum(
+                    "/preview_camera",
+                    fov=fov,
+                    aspect=render_res_vec2.value[0] / render_res_vec2.value[1],
+                    scale=0.35,
+                    wxyz=pose.rotation().wxyz,
+                    position=pose.translation(),
+                    color=(10, 200, 30),
+                )
+                if render_tab_state.preview_render:
                     for client in server.get_clients().values():
                         # aspect ratio is not assignable, pass args in get_render instead
                         client.camera.wxyz = pose.rotation().wxyz
