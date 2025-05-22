@@ -20,6 +20,7 @@ import json
 import os
 import threading
 import time
+from time import perf_counter as perf_counter
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
@@ -912,7 +913,7 @@ def populate_general_render_tab(
         return max(1, int(framerate_number.value * duration_number.value) - 1)
 
     preview_camera_handle: Optional[viser.SceneNodeHandle] = None
-
+    _last_send = 0.0
     def remove_preview_camera() -> None:
         nonlocal preview_camera_handle
         if preview_camera_handle is not None:
@@ -1113,10 +1114,14 @@ def populate_general_render_tab(
                 max_frame = int(framerate_number.value * duration_number.value)
                 if max_frame > 0:
                     assert preview_frame_slider is not None
+                    nonlocal _last_send
+                    now = perf_counter()
+                    if now - _last_send < 1.0 / framerate_number.value:
+                        continue
+                    _last_send = now
                     preview_frame_slider.value = (
                         preview_frame_slider.value + 1
                     ) % max_frame
-                time.sleep(1.0 / framerate_number.value)
 
         play_thread = threading.Thread(target=play)
         play_thread.start()
@@ -1365,7 +1370,13 @@ def populate_general_render_tab(
                 max_frame = int(framerate_number.value * duration_number.value)
                 assert max_frame > 0 and preview_frame_slider is not None
                 preview_frame_slider.value = 0
-                for _ in range(max_frame):
+                render_count = 0
+                while True:
+                    nonlocal _last_send
+                    now = perf_counter()
+                    if now - _last_send < 1.0 / framerate_number.value:
+                        continue
+                    _last_send = now
                     preview_frame_slider.value = (
                         preview_frame_slider.value + 1
                     ) % max_frame
@@ -1375,6 +1386,9 @@ def populate_general_render_tab(
                         width=render_res_vec2.value[0],
                     )
                     writer.append_data(image)
+                    render_count += 1
+                    if render_count >= max_frame:
+                        break
                 writer.close()
                 print(f"Video saved to {video_outfile}")
 
