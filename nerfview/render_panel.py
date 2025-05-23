@@ -914,6 +914,7 @@ def populate_general_render_tab(
 
     preview_camera_handle: Optional[viser.SceneNodeHandle] = None
     _last_send = 0.0
+
     def remove_preview_camera() -> None:
         nonlocal preview_camera_handle
         if preview_camera_handle is not None:
