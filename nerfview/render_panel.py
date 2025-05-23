@@ -20,8 +20,8 @@ import json
 import os
 import threading
 import time
-from time import perf_counter as perf_counter
 from pathlib import Path
+from time import perf_counter as perf_counter
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import imageio
