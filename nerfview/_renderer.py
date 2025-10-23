@@ -127,7 +127,7 @@ class Renderer(threading.Thread):
         self._render_event.set()
 
     def run(self):
-        while self.running:
+        while self.running:https://github.com/OpsiClear/nerfview/blob/main/nerfview/_renderer.py
             while not self.is_prepared_fn():
                 time.sleep(0.1)
             if not self._render_event.wait(0.2):
