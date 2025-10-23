@@ -66,14 +66,22 @@ class Viewer(object):
         render_fn: Callable,
         output_dir: Optional[Path] = None,
         mode: Literal["rendering", "training"] = "rendering",
+        time_enabled: bool = False,
+        time_slider: Optional[viser.GuiSliderHandle] = None,
+        total_frames: int = 0,
+        universal_viewer: Optional[object] = None,
     ):
         # Public states.
+        self.time_enabled = time_enabled
         self.server = server
         self.render_fn = render_fn
         self.mode = mode
         self.lock = VIEWER_LOCK
         self.state = "preparing"
         self.output_dir = output_dir if output_dir is not None else Path("./results")
+        self.time_slider = time_slider
+        self.total_frames = total_frames
+        self.universal_viewer = universal_viewer
 
         # Private states.
         self._renderers: dict[int, Renderer] = {}
@@ -182,8 +190,15 @@ class Viewer(object):
             folder=self._rendering_folder,
             render_tab_state=self.render_tab_state,
             extra_handles=extra_handles,
+            time_enabled=self.time_enabled,
+            time_slider=self.time_slider,
+            total_frames=self.total_frames,
+            rerender_callback=self.rerender,
+            universal_viewer=self.universal_viewer,  # Pass universal viewer reference
         )
         self._rendering_tab_handles.update(handles)
+        # Expose the camera path object so we can update it later
+        self.camera_path = handles.get("camera_path")
 
     def rerender(self, _):
         clients = self.server.get_clients()
