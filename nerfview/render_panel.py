@@ -45,25 +45,24 @@ class Keyframe:
     override_fov_enabled: bool
     override_fov_rad: float
     override_time_enabled: bool
-    override_time_val: float
+    override_frame_index: int
     aspect: float
     override_transition_enabled: bool
     override_transition_sec: Optional[float]
 
     @staticmethod
-    def from_camera(camera: viser.CameraHandle, aspect: float) -> Keyframe:
+    def from_camera(camera: viser.CameraHandle, aspect: float, frame_index: int) -> "Keyframe":
         return Keyframe(
-            camera.position,
-            camera.wxyz,
+            position=camera.position,
+            wxyz=camera.wxyz,
             override_fov_enabled=False,
             override_fov_rad=camera.fov,
-            override_time_enabled=False,
-            override_time_val=0.0,
+            override_time_enabled=True,
+            override_frame_index=frame_index,
             aspect=aspect,
             override_transition_enabled=False,
             override_transition_sec=None,
         )
-
 
 class CameraPath:
     def __init__(
@@ -71,13 +70,15 @@ class CameraPath:
         server: viser.ViserServer,
         duration_element: viser.GuiInputHandle[float],
         time_enabled: bool = False,
+        total_frames: int = 0,
     ):
         self._server = server
         self._keyframes: Dict[int, Tuple[Keyframe, viser.CameraFrustumHandle]] = {}
         self._keyframe_counter: int = 0
         self._spline_nodes: List[viser.SceneNodeHandle] = []
         self._camera_edit_panel: Optional[viser.Gui3dContainerHandle] = None
-
+        self._time_enabled = time_enabled
+        self._total_frames = total_frames
         self._orientation_spline: Optional[splines.quaternion.KochanekBartels] = None
         self._position_spline: Optional[splines.KochanekBartels] = None
         self._fov_spline: Optional[splines.KochanekBartels] = None
@@ -91,7 +92,7 @@ class CameraPath:
         self.tension: float = 0.5  # Tension / alpha term.
         self.default_fov: float = 0.0
         self.time_enabled = time_enabled
-        self.default_render_time: float = 0.0
+        # self.default_render_time: float = 0.0
         self.default_transition_sec: float = 0.0
         self.show_spline: bool = True
 
@@ -155,27 +156,27 @@ class CameraPath:
                 )
                 if self.time_enabled:
                     override_time = server.gui.add_checkbox(
-                        "Override Time", initial_value=keyframe.override_time_enabled
+                        "Tie to Frame", initial_value=keyframe.override_time_enabled
                     )
-                    override_time_val = server.gui.add_slider(
-                        "Override Time",
-                        0.0,
-                        1.0,
-                        step=0.01,
-                        initial_value=keyframe.override_time_val,
+                    override_frame_input = server.gui.add_number(
+                        "Frame Index",
+                        min=0,
+                        max=max(0, self._total_frames - 1), 
+                        step=1,
+                        initial_value=keyframe.override_frame_index,
                         disabled=not keyframe.override_time_enabled,
                     )
 
                     @override_time.on_update
                     def _(_) -> None:
                         keyframe.override_time_enabled = override_time.value
-                        override_time_val.disabled = not override_time.value
-                        self.add_camera(keyframe, keyframe_index)
+                        override_frame_input.disabled = not override_time.value
+                        self.update_spline() # Update spline to reflect change
 
-                    @override_time_val.on_update
+                    @override_frame_input.on_update
                     def _(_) -> None:
-                        keyframe.override_time_val = override_time_val.value
-                        self.add_camera(keyframe, keyframe_index)
+                        keyframe.override_frame_index = override_frame_input.value
+                        self.update_spline() # Update spline immediately
 
                 delete_button = server.gui.add_button(
                     "Delete", color="red", icon=viser.Icon.TRASH
@@ -315,8 +316,10 @@ class CameraPath:
         self, normalized_t: float
     ) -> Optional[Union[Tuple[tf.SE3, float], Tuple[tf.SE3, float, float]]]:
         if len(self._keyframes) < 2:
+            print(f"⚠️ Camera path interpolation called but only {len(self._keyframes)} keyframes (need at least 2)")
             return None
 
+        # Create FOV spline (same as old approach)
         self._fov_spline = splines.KochanekBartels(
             [
                 (
@@ -330,40 +333,89 @@ class CameraPath:
             endconditions="closed" if self.loop else "natural",
         )
 
-        self._time_spline = splines.KochanekBartels(
-            [
-                (
-                    keyframe[0].override_time_val
-                    if keyframe[0].override_time_enabled
-                    else self.default_render_time
-                )
-                for keyframe in self._keyframes.values()
-            ],
-            tcb=(self.tension, 0.0, 0.0),
-            endconditions="closed" if self.loop else "natural",
-        )
+        # Create time spline for frame interpolation (NEW - based on frame indices)
+        if self.time_enabled:
+            # Use simple linear interpolation for time instead of complex spline
+            self._time_spline = None  # We'll use linear interpolation instead
 
         assert self._orientation_spline is not None
         assert self._position_spline is not None
         assert self._fov_spline is not None
-        if self.time_enabled:
-            assert self._time_spline is not None
+
+        # Use the old smooth interpolation approach
         max_t = self.compute_duration()
         t = max_t * normalized_t
         spline_t = float(self.spline_t_from_t_sec(np.array(t)))
 
         quat = self._orientation_spline.evaluate(spline_t)
         assert isinstance(quat, splines.quaternion.UnitQuaternion)
+        
         if self.time_enabled:
+            # Use simple linear interpolation for time based on keyframe frame indices
+            keyframes = list(self._keyframes.values())
+            if len(keyframes) >= 2:
+                # Get frame indices from keyframes
+                frame_indices = [
+                    keyframe[0].override_frame_index if keyframe[0].override_time_enabled else 0
+                    for keyframe in keyframes
+                ]
+                
+                # Linear interpolation between frame indices
+                if spline_t <= 0:
+                    interpolated_frame = frame_indices[0]
+                elif spline_t >= len(frame_indices) - 1:
+                    interpolated_frame = frame_indices[-1]
+                else:
+                    # Linear interpolation between adjacent keyframes
+                    idx_low = int(spline_t)
+                    idx_high = min(idx_low + 1, len(frame_indices) - 1)
+                    t_frac = spline_t - idx_low
+                    interpolated_frame = frame_indices[idx_low] * (1 - t_frac) + frame_indices[idx_high] * t_frac
+                
+                # Convert frame index to normalized time (0.0 to 1.0)
+                interpolated_time = interpolated_frame / max(1, self._total_frames - 1)
+            else:
+                interpolated_time = 0.0
+            
+            # Debug output
+            if hasattr(self, '_debug_counter'):
+                self._debug_counter += 1
+            else:
+                self._debug_counter = 1
+            
+            if self._debug_counter % 30 == 0:  # Print every 30th call
+                # Get the interpolated camera pose
+                interpolated_pose = tf.SE3.from_rotation_and_translation(
+                    tf.SO3(np.array([quat.scalar, *quat.vector])),
+                    self._position_spline.evaluate(spline_t),
+                )
+                interpolated_fov = float(self._fov_spline.evaluate(spline_t))
+                
+                print(f"🎬 Camera path interpolation: normalized_t={normalized_t:.3f}, spline_t={spline_t:.3f}, interpolated_time={interpolated_time:.3f}")
+                print(f"   Camera position: ({interpolated_pose.translation()[0]:.2f}, {interpolated_pose.translation()[1]:.2f}, {interpolated_pose.translation()[2]:.2f})")
+                print(f"   Camera rotation (wxyz): ({interpolated_pose.rotation().wxyz[0]:.3f}, {interpolated_pose.rotation().wxyz[1]:.3f}, {interpolated_pose.rotation().wxyz[2]:.3f}, {interpolated_pose.rotation().wxyz[3]:.3f})")
+                print(f"   Camera FOV: {interpolated_fov:.3f} rad ({interpolated_fov * 180 / np.pi:.1f}°)")
+                print(f"   Number of keyframes: {len(keyframes)}")
+                if len(keyframes) >= 2:
+                    frame_indices = [
+                        keyframe[0].override_frame_index if keyframe[0].override_time_enabled else 0
+                        for keyframe in keyframes
+                    ]
+                    print(f"   Frame indices: {frame_indices}")
+                    print(f"   Total frames: {self._total_frames}")
+                else:
+                    print(f"   ⚠️ Not enough keyframes for interpolation (need at least 2)")
+            
             return (
                 tf.SE3.from_rotation_and_translation(
                     tf.SO3(np.array([quat.scalar, *quat.vector])),
                     self._position_spline.evaluate(spline_t),
                 ),
                 float(self._fov_spline.evaluate(spline_t)),
-                float(self._time_spline.evaluate(spline_t)),
+                interpolated_time, # Return normalized time (0.0 to 1.0)
             )
         else:
+            # Fallback for non-time-enabled paths
             return (
                 tf.SE3.from_rotation_and_translation(
                     tf.SO3(np.array([quat.scalar, *quat.vector])),
@@ -560,6 +612,7 @@ class CameraPath:
         return np.array(out)
 
 
+
 @dataclasses.dataclass
 class RenderTabState:
     """Useful GUI handles exposed by the render tab."""
@@ -581,8 +634,8 @@ Colormaps = Literal["turbo", "viridis", "magma", "inferno", "cividis", "gray"]
 
 
 def apply_float_colormap(
-    image: Float[Tensor, "*bs 1"], colormap: Colormaps = "viridis"
-) -> Float[Tensor, "*bs rgb=3"]:
+    image: Float[Tensor, "bs 1"], colormap: Colormaps = "viridis"
+) -> Float[Tensor, "bs rgb=3"]:
     """Copied from nerfstudio/utils/colormaps.py
     Convert single channel to a color image.
 
@@ -615,6 +668,10 @@ def populate_general_render_tab(
     extra_handles: Optional[Dict[str, viser.GuiInputHandle]] = None,
     scale_ratio: float = 10.0,  # VISER_NERFSTUDIO_SCALE_RATIO
     time_enabled: bool = False,
+    time_slider: Optional[viser.GuiSliderHandle] = None,
+    total_frames: int = 0,
+    rerender_callback: Optional[callable] = None,
+    universal_viewer: Optional[object] = None,  # Add universal viewer reference
 ) -> Dict[str, viser.GuiInputHandle]:
     """
     Populate the render tab with general controls.
@@ -697,11 +754,19 @@ def populate_general_render_tab(
             assert event.client_id is not None
             camera = server.get_clients()[event.client_id].camera
 
-            # Add this camera to the path.
+            # Get frame index directly from time slider (now uses frame indices)
+            current_frame_index = time_slider.value if time_slider else 0
+            
+            print(f"🎬 Adding keyframe:")
+            print(f"   time_slider.value: {current_frame_index} (frame index)")
+            print(f"   camera_path._total_frames: {camera_path._total_frames}")
+            
+            # Add this camera to the path with the current frame index
             camera_path.add_camera(
                 Keyframe.from_camera(
                     camera,
                     aspect=render_res_vec2.value[0] / render_res_vec2.value[1],
+                    frame_index=current_frame_index,
                 ),
             )
             duration_number.value = camera_path.compute_duration()
@@ -864,6 +929,7 @@ def populate_general_render_tab(
             initial_value=0.0,
             disabled=True,
         )
+        
 
         @transition_sec_number.on_update
         def _(_) -> None:
@@ -876,6 +942,20 @@ def populate_general_render_tab(
             initial_value="default",
             hint="Name of the trajectory",
         )
+        
+        # Add output path and video name controls
+        output_path_text = server.gui.add_text(
+            "Output Path",
+            initial_value=str(output_dir / "videos"),
+            hint="Path where videos will be saved",
+        )
+        
+        video_name_text = server.gui.add_text(
+            "Video Name",
+            initial_value="camera_path",
+            hint="Base name for the video (date_time will be added automatically)",
+        )
+        
 
         # add button for loading existing path
         load_camera_path_button = server.gui.add_button(
@@ -890,7 +970,7 @@ def populate_general_render_tab(
             hint="Save the current trajectory to a json file.",
         )
 
-        play_button = server.gui.add_button("Play", icon=viser.Icon.PLAYER_PLAY)
+        play_button = server.gui.add_button("Play with Time-Varying Content", icon=viser.Icon.PLAYER_PLAY)
         pause_button = server.gui.add_button(
             "Pause", icon=viser.Icon.PLAYER_PAUSE, visible=False
         )
@@ -903,11 +983,20 @@ def populate_general_render_tab(
             "Exit Render Preview", color="red", visible=False
         )
         dump_video_button = server.gui.add_button(
-            "Dump Video",
+            "Export Video with Time-Varying Content",
             color="green",
-            icon=viser.Icon.PLAYER_PLAY,
-            hint="Dump the current trajectory as a video.",
+            icon=viser.Icon.FILE_EXPORT,
+            hint="Export the current trajectory as video with time-varying content using render_camera_path_trajectory.",
         )
+        
+        # Add button for smooth camera path trajectory rendering
+        render_trajectory_button = server.gui.add_button(
+            "Render Smooth Trajectory",
+            color="blue",
+            icon=viser.Icon.CAMERA,
+            hint="Render smooth camera path trajectory with time-varying content.",
+        )
+        
 
     def get_max_frame_index() -> int:
         return max(1, int(framerate_number.value * duration_number.value) - 1)
@@ -929,9 +1018,11 @@ def populate_general_render_tab(
 
         if preview_frame_slider is None:
             return
+            
         maybe_pose_and_fov_rad = camera_path.interpolate_pose_and_fov_rad(
             preview_frame_slider.value / get_max_frame_index()
         )
+            
         if maybe_pose_and_fov_rad is None:
             remove_preview_camera()
             return
@@ -995,6 +1086,9 @@ def populate_general_render_tab(
                         client.camera.wxyz = pose.rotation().wxyz
                         client.camera.position = pose.translation()
                         client.camera.fov = fov
+                    # Trigger re-render when preview frame changes
+                    if rerender_callback:
+                        rerender_callback(None)
 
         return preview_frame_slider
 
@@ -1067,10 +1161,13 @@ def populate_general_render_tab(
         "move_checkbox": move_checkbox,
         "show_keyframe_checkbox": show_keyframe_checkbox,
         "show_spline_checkbox": show_spline_checkbox,
+        "render_trajectory_button": render_trajectory_button,
         "transition_sec_number": transition_sec_number,
         "framerate_number": framerate_number,
         "duration_number": duration_number,
         "trajectory_name_text": trajectory_name_text,
+        "output_path_text": output_path_text,
+        "video_name_text": video_name_text,
         "preview_frame_slider": preview_frame_slider,
         "load_camera_path_button": load_camera_path_button,
         "save_camera_path_button": save_camera_path_button,
@@ -1080,6 +1177,8 @@ def populate_general_render_tab(
         "preview_render_stop_button": preview_render_stop_button,
         "dump_video_button": dump_video_button,
     }
+    
+    # Add frame range controls to handles if time is enabled
     if time_enabled:
         handles["render_time"] = render_time
 
@@ -1106,34 +1205,85 @@ def populate_general_render_tab(
     # Play the camera trajectory when the play button is pressed.
     @play_button.on_click
     def _(_) -> None:
-        play_button.visible = False
-        pause_button.visible = True
-        dump_video_button.disabled = True
-
-        def play() -> None:
-            while not play_button.visible:
-                max_frame = int(framerate_number.value * duration_number.value)
-                if max_frame > 0:
-                    assert preview_frame_slider is not None
-                    nonlocal _last_send
-                    now = perf_counter()
-                    if now - _last_send < 1.0 / framerate_number.value:
-                        continue
-                    _last_send = now
-                    preview_frame_slider.value = (
-                        preview_frame_slider.value + 1
-                    ) % max_frame
-
-        play_thread = threading.Thread(target=play)
-        play_thread.start()
-        play_thread.join()
-        dump_video_button.disabled = not preview_save_camera_path_button.visible
+        """Play smooth camera path trajectory with time-varying content in real-time."""
+        if len(camera_path._keyframes) < 2:
+            print("⚠️ Need at least 2 keyframes to play trajectory")
+            return
+            
+        print("🎬 Starting real-time camera path trajectory playback with time-varying content...")
+        
+        # Get parameters from the UI
+        duration_sec = duration_number.value
+        fps = framerate_number.value
+        
+        print(f"   Duration: {duration_sec}s, FPS: {fps}")
+        print(f"   Number of keyframes: {len(camera_path._keyframes)}")
+        print(f"   Time-varying content: {'✅ Enabled' if time_enabled else '❌ Disabled'}")
+        
+        # Call the real-time trajectory player if universal_viewer is available
+        if universal_viewer is not None and hasattr(universal_viewer, 'play_camera_path_trajectory'):
+            try:
+                print("   🚀 Starting real-time trajectory playback with time-varying content...")
+                universal_viewer.play_camera_path_trajectory(
+                    camera_path=camera_path,
+                    duration_sec=duration_sec,
+                    fps=fps
+                )
+                print("   ✅ Real-time trajectory playback complete!")
+            except Exception as e:
+                print(f"   ❌ Error during real-time trajectory playback: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("   ⚠️ Universal viewer not available or play_camera_path_trajectory method not found")
+            print("   💡 Make sure you're using the universal viewer with SOGS or GIFStream support")
 
     # Pause the camera trajectory when the pause button is pressed.
     @pause_button.on_click
     def _(_) -> None:
         play_button.visible = True
         pause_button.visible = False
+        
+        # Disable preview render mode when pausing
+        render_tab_state.preview_render = False
+
+    @render_trajectory_button.on_click
+    def _(event: viser.GuiEvent) -> None:
+        """Render smooth camera path trajectory with time-varying content."""
+        if len(camera_path._keyframes) < 2:
+            print("⚠️ Need at least 2 keyframes to render trajectory")
+            return
+            
+        print("🎬 Starting smooth camera path trajectory rendering...")
+        
+        # Get parameters from the UI
+        duration_sec = duration_number.value
+        fps = framerate_number.value
+        width = int(render_res_vec2.value[0])
+        height = int(render_res_vec2.value[1])
+        
+        print(f"   Duration: {duration_sec}s, FPS: {fps}, Resolution: {width}x{height}")
+        print(f"   Number of keyframes: {len(camera_path._keyframes)}")
+        
+        # Call the smooth trajectory renderer if universal_viewer is available
+        if universal_viewer is not None and hasattr(universal_viewer, 'render_camera_path_trajectory'):
+            try:
+                print("   🚀 Calling render_camera_path_trajectory...")
+                output_dir = universal_viewer.render_camera_path_trajectory(
+                    camera_path=camera_path,
+                    duration_sec=duration_sec,
+                    fps=fps,
+                    width=width,
+                    height=height
+                )
+                print(f"   ✅ Trajectory rendering complete! Output saved to: {output_dir}")
+            except Exception as e:
+                print(f"   ❌ Error during trajectory rendering: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("   ⚠️ Universal viewer not available or render_camera_path_trajectory method not found")
+            print("   To render manually, call: viewer.render_camera_path_trajectory(camera_path)")
 
     @load_camera_path_button.on_click
     def _(event: viser.GuiEvent) -> None:
@@ -1229,6 +1379,7 @@ def populate_general_render_tab(
             json_outfile.parent.mkdir(parents=True, exist_ok=True)
 
             num_frames = int(framerate_number.value * duration_number.value)
+                
             json_data = {}
             # json data has the properties:
             # keyframes: list of keyframes with
@@ -1273,12 +1424,15 @@ def populate_general_render_tab(
             json_data["seconds"] = duration_number.value
             json_data["is_cycle"] = loop_checkbox.value
             json_data["smoothness_value"] = tension_slider.value
+            
+            
             # now populate the camera path:
             camera_path_list = []
             for i in range(num_frames):
                 maybe_pose_and_fov = camera_path.interpolate_pose_and_fov_rad(
                     i / num_frames
                 )
+                    
                 if maybe_pose_and_fov is None:
                     return
                 time = None
@@ -1327,122 +1481,233 @@ def populate_general_render_tab(
 
     @dump_video_button.on_click
     def _(event: viser.GuiEvent) -> None:
-        client = event.client
-        assert client is not None
-
-        video_outfile = output_dir / "videos" / f"traj_{trajectory_name_text.value}.mp4"
-
-        def dump_video() -> None:
-            # enter into preview render mode
-            render_tab_state.preview_render = True
-            maybe_pose_and_fov_rad = compute_and_update_preview_camera_state()
-            if maybe_pose_and_fov_rad is None:
-                remove_preview_camera()
-                return
-            if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
-                pose, fov, time = maybe_pose_and_fov_rad
-            else:
-                pose, fov = maybe_pose_and_fov_rad
-            del fov
-
-            # Hide all scene nodes when we're previewing the render.
-            server.scene.set_global_visibility(False)
-
-            # Back up and then set camera poses.
-            with server.atomic():
-                for client in server.get_clients().values():
-                    camera_pose_backup_from_id[client.client_id] = (
-                        client.camera.position,
-                        client.camera.look_at,
-                        client.camera.up_direction,
-                    )
-                    client.camera.wxyz = pose.rotation().wxyz
-                    client.camera.position = pose.translation()
-
-            # disable all the trajectory control widgets
-            handles_to_disable = list(handles.values()) + list(extra_handles.values())
-            original_disabled = [handle.disabled for handle in handles_to_disable]
-            for handle in handles_to_disable:
-                handle.disabled = True
-
-            def dump() -> None:
-                os.makedirs(output_dir / "videos", exist_ok=True)
-                writer = imageio.get_writer(video_outfile, fps=framerate_number.value)
-                max_frame = int(framerate_number.value * duration_number.value)
-                assert max_frame > 0 and preview_frame_slider is not None
-                preview_frame_slider.value = 0
-                render_count = 0
-                while True:
-                    nonlocal _last_send
-                    now = perf_counter()
-                    if now - _last_send < 1.0 / framerate_number.value:
-                        continue
-                    _last_send = now
-                    preview_frame_slider.value = (
-                        preview_frame_slider.value + 1
-                    ) % max_frame
-                    # should we use get_render here?
-                    image = client.camera.get_render(
-                        height=render_res_vec2.value[1],
-                        width=render_res_vec2.value[0],
-                    )
-                    writer.append_data(image)
-                    render_count += 1
-                    if render_count >= max_frame:
-                        break
-                writer.close()
-                print(f"Video saved to {video_outfile}")
-
-            dump_thread = threading.Thread(target=dump)
-            dump_thread.start()
-            dump_thread.join()
-
-            # restore the original disabled state
-            for handle, original_disabled in zip(handles_to_disable, original_disabled):
-                handle.disabled = original_disabled
-
-            # exit preview render mode
-            render_tab_state.preview_render = False
-
-            # Revert camera poses.
-            with server.atomic():
-                for client in server.get_clients().values():
-                    if client.client_id not in camera_pose_backup_from_id:
-                        continue
-                    cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
-                        client.client_id
-                    )
-                    client.camera.position = cam_position
-                    client.camera.look_at = cam_look_at
-                    client.camera.up_direction = cam_up
-                    client.flush()
-
-            # Un-hide scene nodes.
-            server.scene.set_global_visibility(True)
-
-        if video_outfile.exists():
-            with event.client.gui.add_modal("Dump Video") as modal:
-                event.client.gui.add_markdown(
-                    "Video already exists. Do you want to overwrite?"
+        """Export video with time-varying content using universal viewer's video dump functionality."""
+        if len(camera_path._keyframes) < 2:
+            print("⚠️ Need at least 2 keyframes to export video")
+            return
+            
+        print("🎬 Starting video export with time-varying content...")
+        
+        # Get parameters from the UI
+        duration_sec = duration_number.value
+        fps = framerate_number.value
+        width = int(render_res_vec2.value[0])
+        height = int(render_res_vec2.value[1])
+        
+        # Generate output directory structure
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_name = f"{video_name_text.value}_{timestamp}"
+        base_output_dir = Path(output_path_text.value)
+        
+        print(f"   Duration: {duration_sec}s, FPS: {fps}, Resolution: {width}x{height}")
+        print(f"   Output directory: {base_output_dir}")
+        print(f"   Number of keyframes: {len(camera_path._keyframes)}")
+        
+        # Use universal viewer's video dump functionality for proper MP4 video creation
+        if universal_viewer is not None and hasattr(universal_viewer, '_handle_dump_video'):
+            try:
+                print("   🚀 Using universal viewer's video dump functionality...")
+                
+                # Temporarily set the export path for the universal viewer
+                original_export_path = getattr(universal_viewer, 'export_path', None)
+                if hasattr(universal_viewer, 'export_path') and universal_viewer.export_path:
+                    universal_viewer.export_path.value = str(base_output_dir)
+                
+                # Call the universal viewer's video dump method with camera path
+                universal_viewer._handle_dump_video(
+                    camera_path=camera_path,
+                    duration_sec=duration_sec,
+                    fps=fps,
+                    width=width,
+                    height=height
                 )
-                overwrite_button = event.client.gui.add_button("Overwrite")
-                cancel_button = event.client.gui.add_button("Cancel", color="gray")
-
-                @overwrite_button.on_click
-                def _(_) -> None:
-                    modal.close()
-                    dump_video()
-
-                @cancel_button.on_click
-                def _(_) -> None:
-                    modal.close()
-
+                
+                # Restore original export path
+                if original_export_path is not None:
+                    universal_viewer.export_path.value = original_export_path
+                
+                print(f"   ✅ Video export complete! MP4 video saved to: {base_output_dir}")
+                
+            except Exception as e:
+                print(f"   ❌ Error during video export: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            dump_video()
+            print("   ⚠️ Universal viewer not available or _handle_dump_video method not found")
+            print("   Falling back to render_camera_path_trajectory...")
+            
+            # Fallback to render_camera_path_trajectory
+            try:
+                print("   🚀 Using render_camera_path_trajectory for time-varying video export...")
+                
+                # Temporarily set the output directory for the universal viewer
+                original_output_dir = getattr(universal_viewer.viewer, 'output_dir', None)
+                if hasattr(universal_viewer.viewer, 'output_dir'):
+                    universal_viewer.viewer.output_dir = base_output_dir
+                
+                output_dir = universal_viewer.render_camera_path_trajectory(
+                    camera_path=camera_path,
+                    duration_sec=duration_sec,
+                    fps=fps,
+                    width=width,
+                    height=height
+                )
+                
+                # Restore original output directory
+                if original_output_dir is not None:
+                    universal_viewer.viewer.output_dir = original_output_dir
+                
+                print(f"   ✅ Video export complete! Frames saved to: {output_dir}")
+                print(f"   📁 You can now create a video from the frames using ffmpeg or similar tools")
+                
+            except Exception as e:
+                print(f"   ❌ Error during video export: {e}")
+                import traceback
+                traceback.print_exc()
 
-    camera_path = CameraPath(server, duration_number)
+    def dump_video_fallback() -> None:
+        """Fallback method using preview mode for video export."""
+        print("🎬 Using fallback preview mode export...")
+        
+        # Generate output directory structure for images
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_name = f"{video_name_text.value}_{timestamp}"
+        base_output_dir = Path(output_path_text.value)
+        images_dir = base_output_dir / "images"
+        frames_output_dir = images_dir / video_name
+        
+        # Get parameters from the UI
+        duration_sec = duration_number.value
+        fps = framerate_number.value
+        width = int(render_res_vec2.value[0])
+        height = int(render_res_vec2.value[1])
+        
+        print(f"   Duration: {duration_sec}s, FPS: {fps}, Resolution: {width}x{height}")
+        print(f"   Output directory: {frames_output_dir}")
+        
+        # Create output directories
+        frames_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use the old reliable method: enter preview mode and capture frames
+        render_tab_state.preview_render = True
+        maybe_pose_and_fov_rad = compute_and_update_preview_camera_state()
+        if maybe_pose_and_fov_rad is None:
+            remove_preview_camera()
+            return
+        if len(maybe_pose_and_fov_rad) == 3:  # Time is enabled.
+            pose, fov, time = maybe_pose_and_fov_rad
+        else:
+            pose, fov = maybe_pose_and_fov_rad
+        del fov
+
+        # Hide all scene nodes when we're previewing the render.
+        server.scene.set_global_visibility(False)
+
+        # Back up and then set camera poses.
+        with server.atomic():
+            for client in server.get_clients().values():
+                camera_pose_backup_from_id[client.client_id] = (
+                    client.camera.position,
+                    client.camera.look_at,
+                    client.camera.up_direction,
+                )
+                client.camera.wxyz = pose.rotation().wxyz
+                client.camera.position = pose.translation()
+
+        # disable all the trajectory control widgets (only GUI handles, not objects like CameraPath)
+        handles_to_disable = []
+        for handle in handles.values():
+            if hasattr(handle, 'disabled'):  # Only include GUI handles
+                handles_to_disable.append(handle)
+        for handle in extra_handles.values():
+            if hasattr(handle, 'disabled'):  # Only include GUI handles
+                handles_to_disable.append(handle)
+        
+        original_disabled = [handle.disabled for handle in handles_to_disable]
+        for handle in handles_to_disable:
+            handle.disabled = True
+
+        def dump() -> None:
+            import imageio
+            total_frames_to_export = int(fps * duration_sec)
+            assert total_frames_to_export > 0 and preview_frame_slider is not None
+            
+            print(f"   Will export {total_frames_to_export} frames at {fps} FPS")
+            
+            frame_count = 0
+            
+            while frame_count < total_frames_to_export:
+                nonlocal _last_send
+                now = perf_counter()
+                # Use higher update rate for smooth frame export (60 FPS instead of 30 FPS)
+                if now - _last_send < 1.0 / 60.0:  # 60 FPS for smooth updates
+                    continue
+                _last_send = now
+                
+                # Calculate which frame to show - use the full camera path
+                progress = frame_count / (total_frames_to_export - 1) if total_frames_to_export > 1 else 0
+                frame_index = int(progress * (camera_path._total_frames - 1))
+                frame_index = min(frame_index, camera_path._total_frames - 1)
+                
+                # Update the preview frame slider
+                preview_frame_slider.value = frame_index
+                
+                # Trigger re-render for frame export
+                if rerender_callback:
+                    rerender_callback(None)
+                
+                # Capture the rendered frame from the viewer
+                image = client.camera.get_render(
+                    height=height,
+                    width=width,
+                )
+                
+                # Save the frame as an image
+                frame_filename = f"frame_{frame_count:06d}.png"
+                frame_path = frames_output_dir / frame_filename
+                imageio.imwrite(frame_path, image)
+                
+                frame_count += 1
+                
+                if frame_count % 10 == 0:  # Print progress every 10 frames
+                    print(f"   Exported frame {frame_count}/{total_frames_to_export} (showing frame {frame_index})")
+                    
+            print(f"   ✅ Exported {frame_count} frames to {frames_output_dir}")
+            print(f"   Total size: {sum(f.stat().st_size for f in frames_output_dir.glob('*.png')) / (1024*1024):.1f} MB")
+
+        dump_thread = threading.Thread(target=dump)
+        dump_thread.start()
+        dump_thread.join()
+
+        # restore the original disabled state
+        for handle, original_disabled in zip(handles_to_disable, original_disabled):
+            handle.disabled = original_disabled
+
+        # exit preview render mode
+        render_tab_state.preview_render = False
+
+        # Revert camera poses.
+        with server.atomic():
+            for client in server.get_clients().values():
+                if client.client_id not in camera_pose_backup_from_id:
+                    continue
+                cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
+                    client.client_id
+                )
+                client.camera.position = cam_position
+                client.camera.look_at = cam_look_at
+                client.camera.up_direction = cam_up
+                client.flush()
+
+        # Un-hide scene nodes.
+        server.scene.set_global_visibility(True)
+
+    camera_path = CameraPath(server, duration_number, time_enabled=time_enabled, total_frames=total_frames)
     camera_path.tension = tension_slider.value
     camera_path.default_fov = fov_degrees_slider.value / 180.0 * np.pi
     camera_path.default_transition_sec = transition_sec_number.value
+    handles["camera_path"] = camera_path
 
     return handles
